@@ -1,0 +1,302 @@
+*************************************
+****                             ****
+**** SURVIVAL ANALYSIS EXERCISES ****
+***                              ****
+*************************************;
+
+** Load the data from the training area **;
+
+libname test 'P:\PHASTAR Shared Folders\Training\Survival analysis';
+
+proc datasets library = work kill nolist;
+run;
+quit;
+
+** EXERCISE 1 **;
+
+proc means data = test.simdata1 noprint;
+  var aval;
+  class param arm;
+  output out = work.ex1_1 (where = (_type_ = 3))
+      median = median;
+run;
+
+proc freq data = test.simdata1 noprint;
+  tables param*arm*cnsr / out = work.ex1_2 (drop = percent);
+run;
+
+proc transpose data = work.ex1_2
+                out = work.ex1_2t (drop = _name_ _label_);
+  var count;
+  by param arm;
+  id cnsr;
+run;
+
+data work.ex1 (drop = _1 _0);
+  merge work.ex1_1 (drop = _type_ _freq_)
+        work.ex1_2t;
+  by param arm;
+  perc = 100*(_1/(_1+_0));
+run;
+
+proc sort data = work.ex1;
+  by descending param arm;
+run;
+
+** EXERCISE 2 **;
+
+*Create macro to run analysis and create plots for Overall survival (OS) and Progression Free Survival (PFS) seperately;
+%macro ex2(surv = );
+
+  ods graphics on;
+  ods output quartiles = quartiles_&surv.;
+  proc lifetest data = test.simdata1 (where = (param = "&surv.")) outsurv = outdata_&surv. method = km plot = (survival ls lls);
+    time aval*cnsr(1);
+    strata arm;
+    id subjid;
+  run;
+  ods graphics off;
+  
+  data work.outdata_&surv.2;
+    set work.outdata_&surv. (where = (aval le 6));
+    if arm = "Active" then temp = 1;
+    else if arm = "Placebo" then temp = 2;
+  run;
+  
+  data work.outdata_&surv.3;
+    set work.outdata_&surv.2;
+    by temp;
+    if last.temp;
+  run;
+  
+  data work.outdata_&surv._surv;
+    set work.outdata_&surv.;
+    if _censor_ = 0 or _censor_ = . then surv = survival;
+	else if _censor_ = 1 and survival ne . then surv = .;
+	else if _censor_ = 1 and survival = . then surv = surv;
+    if _censor_ = 1 then do;
+      if survival ne . then censored = survival;
+	  else if survival = . then censored = surv;
+  	  if arm = "Active" then censored_arm = 1;
+  	  else if arm = "Placebo" then censored_arm = 2;
+    end;
+
+	if surv ne . and _censor_ ne 1 and surv ne 0 then neglogsurv = -log(surv);
+
+    if surv ne . and _censor_ ne 1 and aval ne 0 and surv ne 0 then do;
+	  logaval = log(aval);
+	  comploglog = log(-log(surv));
+	end;
+
+	retain surv;
+  run;
+  
+  title1 "&surv.";
+  proc sgplot data = work.outdata_&surv._surv;
+    step x = aval y = surv / group = arm
+                             name = "s";
+    scatter x = aval y = censored / markerattrs = (symbol = circle color = grey)
+                                    name = "c";
+    scatter x = aval y = censored / markerattrs = (symbol = circle)
+                                    group = arm;
+	refline 0.25 / lineattrs = (pattern = shortdash color = green);
+	refline 0.5 / lineattrs = (pattern = shortdash color = black);
+	refline 0.75 / lineattrs = (pattern = shortdash color = green);
+    xaxis label = "Time (months)";
+    yaxis label = "Survival Distribution Function"
+	      values = (0 to 1 by 0.25);
+    keylegend "c" / location = inside 
+                    position = topright;
+    keylegend "s";
+  run;
+
+  proc sgplot data = work.outdata_&surv._surv (where = (censored_arm ne .)) noautolegend;
+    scatter x = aval y = censored_arm / group = censored_arm
+                                        markerattrs = (symbol = plus);
+    xaxis label = "Time (months)";
+    yaxis label = "Strata (ARM)"
+          display = (noticks)
+          values = (0 1 2 3)
+  		  valuesdisplay = ("" "Active" "Placebo" "");
+  run;
+
+  proc sgplot data = work.outdata_&surv._surv;
+    series x = aval y = neglogsurv / group = arm
+	                                 name = "s";
+    scatter x = aval y = neglogsurv / group = arm
+	                                  markerattrs = (symbol = plus);
+    xaxis label = "Time (months)";
+    yaxis label = "Negative Log SDF";
+    keylegend "s";
+  run;
+
+  proc sgplot data = work.outdata_&surv._surv;
+    series x = logaval y = comploglog / group = arm
+	                                    name = "s";
+    scatter x = logaval y = comploglog / group = arm
+	                                     markerattrs = (symbol = plus);
+    xaxis label = "Log of Time (months)"
+	      %if "&surv" = "OS" %then %do;
+		    values = (0.5 to 3.5 by 0.5)
+		  %end;
+		  %else %do;
+		    values = (-2 to 4 by 1)
+		  %end;
+		  ;
+    yaxis label = "Log Negative Log SDF"
+	      values = (-4 to 1 by 1);
+    keylegend "s";
+  run;
+  title1 "";
+
+%mend ex2;
+
+%ex2(surv = OS)
+%ex2(surv = PFS)
+
+** EXERCISE 3 **;
+
+data work.ex3;
+  set test.simdata1;
+  if arm = "Active" then arm_n = 0;
+  else if arm = "Placebo" then arm_n = 1;
+run;
+
+ods output HomTests = work.teststats_strata;
+proc lifetest data = work.ex3 (where = (param = "PFS")) outsurv = outdata_ex3 method = km;
+  time aval*cnsr(1);
+  strata arm_n;
+  id subjid;
+run;
+*LogRank Chi-Squared value = 11.43 and p-value = 0.0007;
+
+ods output LogUniChiSq = work.teststats_test;
+proc lifetest data = work.ex3 (where = (param = "PFS")) outsurv = outdata_ex3 method = km;
+  time aval*cnsr(1);
+  test arm_n;
+  id subjid;
+run;
+*LogRank Chi-Squared value = 11.32 and p-value = 0.0008;
+
+** EXERCISE 4 **;
+
+data work.ex4;
+  set test.simdata1 (where = (param = "OS"));
+  if arm = "Active" then arm_n = 0;
+  else if arm = "Placebo" then arm_n = 1;
+run;
+
+ods output LogUniChiSq = work.ex4_teststats;
+proc lifetest data = work.ex4 method = km;
+  time aval*cnsr(1);
+  test arm_n;
+  id subjid;
+run;
+
+data work.ex4_teststats1 (keep = U V HR Z UCL LCL PVALUE);
+  set work.ex4_teststats (rename = (statistic = U probchisq = Pvalue));
+  V = (stderr)**2;
+  *Calculate the Hazard Ratio;
+  HR = exp(U/V);
+  *Calculate the upper and lower limits of the 95% CI of the HR;
+  Z = probit(1-(0.05/2));
+  UCL = exp((U/V)+(Z/StdErr));
+  LCL = exp((U/V)-(Z/StdErr));
+run;
+*HR = 0.58 (95% CI: 0.28-1.19, P-value: 0.139)
+ Favours Active Drug (42% reduction in risk of death) but p-value = 0.139 >> 0.05 implies result not statistically significant
+ Sample size small, which is reflected by the uncertainty around the HR estimate;
+
+** EXERCISE 5 **;
+
+ods output ParameterEstimates = work.ex5_estimates GlobalTests = ex5_tests;
+proc phreg data = test.simdata1 (where = (param = "OS"));
+  class arm; 
+  model aval*cnsr(1) = arm / ties = efron risklimits = pl alpha = 0.05;
+  test = arm;
+  hazardratio = arm;
+run;
+*HR = 0.599 (95% CI: 0.299-1.205)
+ LRT P-value: 0.1484, Wald Test P-value: 0.1454
+ Favours Active Drug (40% reduction in risk of death) but p-value >> 0.05 implies result not statistically significant;
+
+** EXERCISE 6 **;
+
+* 1 - Summarise the baseline characteristics by treatment arm*;
+
+data work.ex6;
+  set test.simdata2;
+run;
+
+proc freq data = work.ex6;
+  tables covar1d / out = work.ex6_freq1;
+  by arm;
+run;
+
+data work.ex6_freq1_1;
+  length summary $8;
+  set work.ex6_freq1;
+  summary = cat(put(count, 2.0), " (", put(percent, 2.0), "%)");
+run;
+
+proc sort data = work.ex6_freq1_1;
+  by covar1d;
+run;
+
+proc transpose data = work.ex6_freq1_1
+                out = work.ex6_freq1_t (drop = _name_
+                                        rename = (covar1d = BL_factor));
+  var summary;
+  by covar1d;
+  id arm;
+run;
+
+proc freq data = work.ex6;
+  tables covar2d / out = work.ex6_freq2;
+  by arm;
+run;
+
+data work.ex6_freq2_1;
+  length summary $8;
+  set work.ex6_freq2;
+  summary = cat(put(count, 2.0), " (", put(percent, 2.0), "%)");
+run;
+
+proc sort data = work.ex6_freq2_1;
+  by covar2d;
+run;
+
+proc transpose data = work.ex6_freq2_1
+                out = work.ex6_freq2_t (drop = _name_
+                                        rename = (covar2d = BL_factor));
+  var summary;
+  by covar2d;
+  id arm;
+run;
+
+data work.ex6_freq;
+  set work.ex6_freq1_t
+      work.ex6_freq2_t;
+run;
+
+*The treatment arms are fairly balanced with respect to genetic mutation status (54% vs. 46% in the Active arm and 50% vs 50% in the Placebo arm), however there is an inbalance of patients with prior therapy
+ with more patients at baseline having had prior therapy than not (65% vs. 35% in Active arm and 79% vs. 21% in Placebo arm);
+
+* 2 - Merge the datasets;
+
+data work.ex6_merge;
+  merge test.simdata2
+        test.simdata1;
+  by subjid;
+run;
+
+ods output ParameterEstimates = work.ex6_estimates GlobalTests = ex6_tests;
+proc phreg data = work.ex6_merge (where = (param = "OS"));
+  class arm covar1d covar2d; 
+  model aval*cnsr(1) = arm covar1d covar2d / ties = efron risklimits = pl alpha = 0.05;
+  test = arm;
+  hazardratio = arm;
+run;
+
+*HR = 0.545 (95% CI: 0.263-1.127)
+ LRT P-value: 0.1484, Wald Test P-value: 0.3882 - Different from p-value in slides, CHECK THIS!;

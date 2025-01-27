@@ -1,0 +1,175 @@
+*************************************
+****                             ****
+**** SURVIVAL ANALYSIS EXERCISES ****
+***                              ****
+*************************************;
+
+** Load the data from the training area **;
+
+libname test 'P:\PHASTAR Shared Folders\STATS FOLDER\Stats Training\Survival analysis';
+
+proc datasets library = work kill nolist;
+run;
+quit;
+
+** EXERCISE 1: STRUCTURE OF SURVIVAL DATA **;
+
+data work.simdata1;
+  set test.simdata1;
+run;
+
+data work.simdata2;
+  set test.simdata2;
+run;
+
+data work.censor_plot (where = (cnsr = 1));
+  set work.simdata1;
+  if arm = "Active" then arm_n = 1;
+  else if arm = "Placebo" then arm_n = 2;
+run;
+
+proc sgplot data = work.censor_plot (where = (param = "OS")) noautolegend;
+  scatter x = aval y = arm_n / group = arm_n
+                               markerattrs = (symbol = plus);
+  xaxis label = "Time (months)";
+  yaxis label = "Strata (ARM)"
+        display = (noticks)
+        values = (0.5 to 2.5 by 0.5)
+  		valuesdisplay = ("" "Active" "" "Placebo" "");
+run;
+
+** EXERCISE 2 **;
+
+*Create macro to run analysis and create plots for Overall survival (OS) and Progression Free Survival (PFS) seperately;
+%macro ex2(surv = );
+
+  ods graphics on;
+  ods output ProductLimitEstimates = work.estimates_&surv.;
+  ods output quartiles = quartiles_&surv.;
+  ods output SurvivalPlot = work.plot_&surv.;
+  proc lifetest data = test.simdata1 (where = (param = "&surv.")) outsurv = work.outdata_&surv. method = km atrisk plot = (survival);
+    time aval*cnsr(1);
+    strata arm;
+  run;
+  ods graphics off;
+  
+  %*Find the percentage of subjects who were event free a 6 months;
+  data work.outdata_&surv.2;
+    set work.outdata_&surv. (where = (aval le 6));
+    if arm = "Active" then temp = 1;
+    else if arm = "Placebo" then temp = 2;
+  run;
+  
+  data work.outdata_&surv.3;
+    set work.outdata_&surv.2;
+    by temp;
+    if last.temp;
+  run;
+
+  %*Create macro variables containing the median survival times of each treatment group;
+  data _null_;
+    set work.quartiles_&surv. (where = (percent = 50));
+	if arm = "Active" then call symputx("median_a", estimate);
+	else call symputx("median_p", estimate);
+  run;
+
+  %put &=median_a;
+  %put &=median_p;
+  
+  %*Create the Kaplan-Meier Plot using OUTSURV dataset and PROC SGPLOT;
+  data work.km (keep = arm aval _censor_ surv surv_c);
+    attrib surv_c label = "Censored";
+    set work.outdata_&surv.;
+
+	if _censor_ = 1 and survival ne . then do;
+	  surv = survival;
+	  surv_c = survival;
+	end;
+	else if _censor_ = 1 and survival = . then do;
+      surv = surv;
+	  surv_c = surv;
+	end;
+	else do;
+      surv = survival;
+	  surv_c = .;
+	end;
+
+	retain surv;
+  run;
+  
+  title1 "Kaplan-Meier Plot (&surv.)";
+  proc sgplot data = work.km;
+    step x = aval y = surv / group = arm
+                             name = "s";
+    scatter x = aval y = surv_c / markerattrs = (symbol = plus)
+                                  name = "c";
+    scatter x = aval y = surv_c / markerattrs = (symbol = plus)
+                                  group = arm;
+    xaxis label = "Time (months)";
+    yaxis label = "Survival Distribution Function"
+	      values = (0 to 1 by 0.25);
+    keylegend "c" / location = inside 
+                    position = topright;
+    keylegend "s";
+  run;
+
+  %*Create the Kaplan-Meier Plot, adding reference lines for median and percentiles, and xaxistable for number of patients at risk;
+
+  ods output ProductLimitEstimates = work.timelist_&surv.;
+  proc lifetest data = test.simdata1 (where = (param = "&surv.")) method = km atrisk timelist = 0 to 25 by 5;
+    time aval*cnsr(1);
+    strata arm;
+  run;
+
+  data work.km1 (keep = aval surv surv_c arm numberatrisk aval_xaxis);
+    set work.km
+        work.timelist_&surv. (keep = arm timelist numberatrisk
+                              rename = (timelist = aval));
+    if aval in (0 5 10 15 20 25) and numberatrisk ne . then aval_xaxis = aval;
+    else if aval in (0 5 10 15 20 25) and numberatrisk = . then do;
+      aval_xaxis = aval;
+      numberatrisk = 0;
+    end;
+    else aval_xaxis = .;
+  run;
+
+  proc sort data = work.km1;
+    by arm aval;
+  run;
+  
+  title1 "Kaplan-Meier Plot (&surv.)";
+  proc sgplot data = work.km1;
+    step x = aval y = surv / group = arm
+                             name = "s";
+    scatter x = aval y = surv_c / markerattrs = (symbol = plus)
+                                  name = "c";
+    scatter x = aval y = surv_c / markerattrs = (symbol = plus)
+                                  group = arm;
+    xaxistable numberatrisk / x = aval_xaxis
+                              class = arm
+							  title = "Number at Risk"
+							  location = outside
+                              position = bottom;
+	refline 0.5 / lineattrs = (pattern = shortdash);
+	refline &median_a. &median_p. / axis = x 
+                       lineattrs = (pattern = shortdash);
+    xaxis label = "Time (months)";
+    yaxis label = "Survival Distribution Function"
+	      values = (0 to 1 by 0.25);
+    keylegend "c" / location = inside 
+                    position = topright;
+    keylegend "s";
+  run;
+
+%mend ex2;
+
+%ex2(surv = OS)
+%ex2(surv = PFS)
+
+** EXERCISE 3 **;
+
+
+** EXERCISE 4 **;
+
+
+** EXERCISE 5 **;
